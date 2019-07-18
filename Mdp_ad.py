@@ -1,91 +1,105 @@
 import numpy as np
 from itertools import islice
+from collections import Counter, OrderedDict
 
 
 class MdpAD:
-    def __init__(self, input_data=None):
-        self.data = None
+    def __init__(self, input_data=None, threshold=None):
+        '''
+        Each log key value is added by 3, and then assigned to each col(row) of Transition matrix 
+        --------------
+        BOS key -> 0
+        EOS key -> 1
+        Unknown key -> 2
+        
+        (EXAMPLE) 2, 1, 3 ... -> 0, 5, 4, 6 ...
+        (EXAMPLE) 6, -1, 2 ... -> 0, 9, 2, 5 ...
+        '''
+        self.threshold = threshold
+        self.BOS_key, self.EOS_key, self.UNK_key = 0, 1, 2
+        self.training_data = None
+        
         if input_data is not None:
-            self._initialize_seq(input_data)
+            if type(input_data) is not dict:
+                raise ValueError('Input data is not in a valid format (Should be a dictionary)')            
+            self.training_data = input_data
 
     def fit(self, input_data=None):
-
+        '''Fit Anomaly Detector to training dataset'''
         if input_data is None:
-            if self.data is None:
+            if self.training_data is None:
                 raise ValueError('No input data')
-
+            else: 
+                self.training_data =self._encode(input_data)
         else:
-            if self.data is not None:
+            if self.training_data is not None:
                 raise ValueError('Got 2 input data')
             else:
-                self._initialize_seq(input_data)
+                self.training_data = self._encode(input_data)
 
-        self.make_transition_matrix()
+        self._make_transition_matrix()
 
-    def predict(self, test_data, threshold=None):
+    def predict(self, test_data):
+        '''Predict novelty score from test dataset'''
         if type(test_data) is not dict:
             raise ValueError('Input data is not in a valid format (Should be a dictionary)')
 
-        test_data = dict([(b, [self.BOS_key] + s + [self.EOS_key])
-                          for b, s in test_data.items()])
-
-        score = {k: self.get_novelty_score(s) for k, s in test_data.items()}
-
-        if threshold is None:
+        test_data = self._encode(test_data)
+        score = {k: self._get_novelty_score(s) for k, s in test_data.items()}
+        if self.threshold is None:
             return score
-
-        anomaly = dict([(i, s) for i, s in score if s < threshold])
+        
+        # Return anomaly score whose score is higher than the threshold
+        anomaly = dict([(i, s) for i, s in score if s > self.threshold])
         return anomaly
 
-    def make_transition_matrix(self):
-        unlisted_log = [x for y in list(self.data.values()) for x in y]
-        unique_logs, log_count = np.unique(unlisted_log, return_counts=True)
-        self.data_counter = dict(zip(unique_logs, log_count))
+    def _make_transition_matrix(self):
+        '''Make transition matrix from whole log sequences'''
+        count = Counter()
+        for d in self.training_data.values():
+            count.update(d)
+        
+        # Add idx of UNK token
+        count[2] = 1
+        
+        # Sort counter by key
+        count = dict(sorted(count.items(), key=lambda x: x[0]))
+        n_log = list(count.keys())[-1] + 1
+        
+        trans_mat = np.zeros((n_log, n_log))
+        window_sequences = [self._window(x) for x in list(self.training_data.values())]
 
-        n_log = len(unique_logs)
-        self.transition_matrix = np.zeros((n_log, n_log))
-
-        window_sequences = [self._window(x) for x in list(self.data.values())]
-
-        # Update frequency on transition matrix
-        self._update_transition_freq(window_sequences)
+        # Update frequency on the transition matrix
+        for seq in window_sequences:
+            for window in seq:
+                trans_mat[window] += 1
 
         # Make frequency to prob
-        self.transition_matrix /= log_count[:, np.newaxis]
+        log_count = np.array(list(count.values()))[:, np.newaxis]
+        self.transition_matrix = trans_mat / log_count
+        
+        count[2] = 0
+        self.training_data_count = count
+        
+        # Decode the log sequences
+        self.training_data = self._decode(self.training_data)
 
-    def get_novelty_score(self, seq):
+    def _get_novelty_score(self, seq):
+        '''Calculate expectation of transition prob in the log sequence'''
         if type(seq) is not list:
             raise ValueError('Input data should be in a list format')
         windows = list(self._window(seq))
 
         def get_neg_log(x):
-            # Return 0 probability if window contains UNK token
             prob = self.transition_matrix[x]
-            if -1 in x or prob == 0:
-                prob = 1e-9
-
-            return -np.log(prob)
+            return -np.log(1e-9 if prob == 0 else prob)
 
         neg_log_sum = np.sum(list(map(get_neg_log, windows)))
-        n = len(seq)
-        return neg_log_sum / (n - 1)
-
-    def _initialize_seq(self, input_data):
-        if type(input_data) is not dict:
-            raise ValueError('Input data is not in a valid format (Should be a dictionary)')
-
-        self.unique_logs = self._get_unique_log(input_data)
-        self.BOS_key = len(self.unique_logs)
-        self.EOS_key = len(self.unique_logs) + 1
-        self.data = dict([(b, [self.BOS_key] + s + [self.EOS_key])
-                          for b, s in input_data.items()])
-        self.data_id = input_data.keys()
-
-    def _get_unique_log(self, seq):
-        unlisted_log = [x for y in list(seq.values()) for x in y]
-        return np.unique(unlisted_log)
+        return neg_log_sum / (len(seq) - 1)
 
     def _window(self, seq, n=2):
+        '''Make sequence of transition from log sequence'''
+        # BOS  3  4  5  EOS  =>  (BOS, 3)  (3, 4)  (4, 5)  (5, EOS)
         it = iter(seq)
         result = tuple(islice(it, n))
         if len(result) == n:
@@ -93,8 +107,18 @@ class MdpAD:
         for elem in it:
             result = result[1:] + (elem,)
             yield result
-
-    def _update_transition_freq(self, data):
-        for seq_window in data:
-            for window in seq_window:
-                self.transition_matrix[window] += 1
+            
+    def _encode(self, data):
+        '''Add 3 to every element in the sequence'''
+        data = OrderedDict([(b, [self.BOS_key] + [e + 3 for e in s] + [self.EOS_key])
+                          for b, s in data.items()])
+        return data
+    
+    def _decode(self, data):
+        '''Subtract 3 from every key and delete EOS and BOS tokens'''
+        keys = list(data.keys())
+        vals = list(data.values())
+        vals = [val[1:-1] for val in vals]
+        data = OrderedDict([(key, [e - 3 for e in val]) 
+                            for key, val in zip(keys, vals)])
+        return data
