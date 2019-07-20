@@ -50,7 +50,7 @@ class MdpAD:
             return score
         
         # Return anomaly score whose score is higher than the threshold
-        anomaly = dict([(i, s) for i, s in score if s > self.threshold])
+        anomaly = {k: s for k, s in score if s > self.threshold}
         return anomaly
 
     def _make_transition_matrix(self):
