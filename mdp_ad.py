@@ -4,7 +4,7 @@ from collections import Counter, OrderedDict
 
 
 class MdpAD:
-    def __init__(self, input_data=None, threshold=None):
+    def __init__(self, transition_dim=2, input_data=None, threshold=None):
         '''
         Each log key value is added by 3, and then assigned to each col(row) of Transition matrix 
         --------------
@@ -15,6 +15,12 @@ class MdpAD:
         (EXAMPLE) 2, 1, 3 ... -> 0, 5, 4, 6 ...
         (EXAMPLE) 6, -1, 2 ... -> 0, 9, 2, 5 ...
         '''
+        if type(transition_dim) is not int:
+            raise ValueError('transition dimension should be integer format')
+        if transition_dim <= 1:
+            raise ValueError('dimension should be bigger than 1')
+        
+        self.dim = transition_dim
         self.threshold = threshold
         self.BOS_key, self.EOS_key, self.UNK_key = 0, 1, 2
         self.training_data = None
@@ -66,7 +72,7 @@ class MdpAD:
         count = dict(sorted(count.items(), key=lambda x: x[0]))
         n_log = list(count.keys())[-1] + 1
         
-        trans_mat = np.zeros((n_log, n_log))
+        trans_mat = np.zeros(tuple([n_log] * self.dim))
         window_sequences = [self._window(x) for x in list(self.training_data.values())]
 
         # Update frequency on the transition matrix
@@ -76,7 +82,14 @@ class MdpAD:
 
         # Make frequency to prob
         log_count = np.array(list(count.values()))[:, np.newaxis]
-        self.transition_matrix = trans_mat / log_count
+        if self.dim > 2:
+            # prob = P(X == x_i | x_i-1, x_i-2, ...)
+            # --> log count = P(x_i-1, x_i-2, ...)
+            log_count = np.expand_dims(np.sum(trans_mat, axis=self.dim-1), axis=self.dim-1)
+            # to avoid error about dividing zero
+            log_count = np.where(log_count > 0, log_count, 1)
+        
+        self.transition_matrix = trans_mat / log_count       
         
         count[2] = 0
         self.training_data_count = count
@@ -97,12 +110,12 @@ class MdpAD:
         neg_log_sum = np.sum(list(map(get_neg_log, windows)))
         return neg_log_sum / (len(seq) - 1)
 
-    def _window(self, seq, n=2):
+    def _window(self, seq):
         '''Make sequence of transition from log sequence'''
         # BOS  3  4  5  EOS  =>  (BOS, 3)  (3, 4)  (4, 5)  (5, EOS)
         it = iter(seq)
-        result = tuple(islice(it, n))
-        if len(result) == n:
+        result = tuple(islice(it, self.dim))
+        if len(result) == self.dim:
             yield result
         for elem in it:
             result = result[1:] + (elem,)
