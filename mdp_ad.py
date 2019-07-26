@@ -108,7 +108,7 @@ class MdpAD:
             return -np.log(1e-9 if prob == 0 else prob)
 
         neg_log_sum = np.sum(list(map(get_neg_log, windows)))
-        return neg_log_sum / (len(seq) - 1)
+        return neg_log_sum / (len(seq) - (self.dim-1))
 
     def _window(self, seq):
         '''Make sequence of transition from log sequence'''
